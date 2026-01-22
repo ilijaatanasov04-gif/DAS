@@ -2,14 +2,12 @@ import pandas as pd
 import numpy as np
 from ta import momentum, trend, volatility, volume
 import sqlite3
-from crypto import DB_PATH
+from crypto import DB_PATH, get_db_connection, ensure_ohlcv_data
 from datetime import datetime, timedelta
 
 
 def get_ohlcv_data(symbol, days=365):
     """Fetch OHLCV data from database for given symbol"""
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-
     pair = symbol.upper() + 'USDT'
     cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
@@ -20,11 +18,17 @@ def get_ohlcv_data(symbol, days=365):
         ORDER BY date ASC
     """
 
+    conn = get_db_connection()
     df = pd.read_sql_query(query, conn, params=(pair, cutoff_date))
     conn.close()
 
     if df.empty:
-        return None
+        ensure_ohlcv_data(symbol)
+        conn = get_db_connection()
+        df = pd.read_sql_query(query, conn, params=(pair, cutoff_date))
+        conn.close()
+        if df.empty:
+            return None
 
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
@@ -373,7 +377,7 @@ def analyze_symbol(symbol, timeframe='1y'):
         return {'error': 'Insufficient data for analysis'}
 
     # Get current price
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT price, market_cap, volume_24h FROM top_coins WHERE symbol = ?", (symbol.upper(),))

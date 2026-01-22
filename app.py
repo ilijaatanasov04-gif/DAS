@@ -2,7 +2,7 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, f
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from flask_cors import CORS
 from models import db, User, Watchlist, Notification, Portfolio
-from crypto import init_db, run_pipeline, DB_PATH, get_db_connection
+from crypto import init_db, run_pipeline, DB_PATH, get_db_connection, ensure_ohlcv_data
 from technical_analysis import analyze_symbol
 import sqlite3
 import os
@@ -214,6 +214,21 @@ def get_ohlcv_data(symbol):
 
     rows = c.fetchall()
     data = [dict(row) for row in rows]
+
+    if not data:
+        conn.close()
+        ensure_ohlcv_data(symbol)
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("""
+            SELECT date, open, high, low, close, volume
+            FROM ohlcv_data
+            WHERE symbol = ? AND date >= ?
+            ORDER BY date ASC
+        """, (pair, cutoff_date))
+        rows = c.fetchall()
+        data = [dict(row) for row in rows]
 
     conn.close()
     return jsonify(data)
@@ -472,6 +487,7 @@ def technical_analysis_page():
 def get_technical_analysis(symbol):
     """Get technical analysis for a coin"""
     try:
+        ensure_ohlcv_data(symbol)
         result = analyze_symbol(symbol)
         return jsonify(result)
     except Exception as e:
@@ -492,6 +508,7 @@ def predict_crypto_price(symbol):
         days_ahead = int(request.args.get('days', 7))
         lookback = int(request.args.get('lookback', 30))
 
+        ensure_ohlcv_data(symbol)
         result = predict_price(symbol, days_ahead=days_ahead, lookback_days=lookback)
         return jsonify(result)
     except Exception as e:

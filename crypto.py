@@ -18,6 +18,86 @@ def get_db_connection():
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
+def backfill_ohlcv(symbol, start_ms=0, end_ms=None):
+    pair = symbol.upper() + "USDT"
+    end_ms = end_ms or int(time.time() * 1000)
+    cursor = start_ms
+    total = 0
+
+    while cursor < end_ms:
+        try:
+            r = requests.get(
+                BINANCE_BASE + "/api/v3/klines",
+                params={
+                    "symbol": pair,
+                    "interval": "1d",
+                    "startTime": cursor,
+                    "endTime": end_ms,
+                    "limit": 1000
+                },
+                timeout=10
+            )
+            chunk = r.json()
+
+            if not isinstance(chunk, list) or len(chunk) == 0:
+                break
+
+            candles = [
+                (
+                    pair,
+                    k[0],
+                    dt.datetime.fromtimestamp(k[0] / 1000).strftime("%Y-%m-%d"),
+                    float(k[1]),
+                    float(k[2]),
+                    float(k[3]),
+                    float(k[4]),
+                    float(k[5])
+                )
+                for k in chunk
+            ]
+
+            conn = get_db_connection()
+            conn.cursor().executemany("""
+                INSERT OR IGNORE INTO ohlcv_data
+                (symbol, timestamp, date, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, candles)
+            conn.commit()
+            conn.close()
+
+            total += len(candles)
+            cursor = chunk[-1][0] + 1
+
+            if len(chunk) < 1000:
+                break
+        except:
+            break
+
+    return total
+
+def ensure_ohlcv_data(symbol):
+    pair = symbol.upper() + "USDT"
+    now_ms = int(time.time() * 1000)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT MIN(timestamp), MAX(timestamp) FROM ohlcv_data WHERE symbol = ?", (pair,))
+    row = c.fetchone()
+    conn.close()
+
+    min_ts, max_ts = row if row else (None, None)
+    total = 0
+
+    if min_ts is None:
+        total += backfill_ohlcv(symbol, start_ms=0, end_ms=now_ms)
+    else:
+        if min_ts > 0:
+            total += backfill_ohlcv(symbol, start_ms=0, end_ms=min_ts - 1)
+        if max_ts and max_ts + 86400000 < now_ms:
+            total += backfill_ohlcv(symbol, start_ms=max_ts + 1, end_ms=now_ms)
+
+    return total
+
 
 
 # INIT DATABASE (табели: top_coins, meta_info, ohlcv_data)

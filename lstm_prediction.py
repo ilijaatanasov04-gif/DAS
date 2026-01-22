@@ -3,7 +3,7 @@ import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error, r2_score
 import sqlite3
-from crypto import DB_PATH
+from crypto import DB_PATH, get_db_connection, ensure_ohlcv_data
 from datetime import datetime, timedelta
 import pickle
 import os
@@ -37,8 +37,6 @@ class LSTMPricePredictor:
 
     def get_historical_data(self, days=365):
         """Fetch historical OHLCV data from database"""
-        conn = sqlite3.connect(DB_PATH, timeout=10)
-
         pair = self.symbol + 'USDT'
         cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
@@ -49,11 +47,17 @@ class LSTMPricePredictor:
             ORDER BY date ASC
         """
 
+        conn = get_db_connection()
         df = pd.read_sql_query(query, conn, params=(pair, cutoff_date))
         conn.close()
 
         if df.empty:
-            return None
+            ensure_ohlcv_data(self.symbol)
+            conn = get_db_connection()
+            df = pd.read_sql_query(query, conn, params=(pair, cutoff_date))
+            conn.close()
+            if df.empty:
+                return None
 
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values('date')
@@ -296,7 +300,7 @@ def predict_price(symbol, days_ahead=7, lookback_days=30):
         evaluation = predictor.evaluate()
 
         # Get current price
-        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT price FROM top_coins WHERE symbol = ?", (symbol.upper(),))
