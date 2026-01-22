@@ -3,8 +3,11 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import time
+import os
 
-DB_PATH = "coingecko_top1000.db"
+DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.getenv('COINGECKO_DB_PATH', os.path.join(DATA_DIR, 'coingecko_top1000.db'))
 API_KEY = "CG-t7FgFVU7PUeZL3nMf7Zd9hRV"
 HEADERS = {"accept": "application/json", "x-cg-pro-api-key": API_KEY}
 BINANCE_BASE = "https://api.binance.com"

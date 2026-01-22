@@ -13,7 +13,10 @@ load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
+DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(DATA_DIR, exist_ok=True)
+USERS_DB_PATH = os.getenv('USERS_DB_PATH', os.path.join(DATA_DIR, 'users.db'))
+app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{USERS_DB_PATH}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Enable CORS for Next.js frontend
