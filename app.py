@@ -2,12 +2,13 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, f
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from flask_cors import CORS
 from models import db, User, Watchlist, Notification, Portfolio
-from crypto import init_db, run_pipeline, DB_PATH
+from crypto import init_db, run_pipeline, DB_PATH, get_db_connection
 from technical_analysis import analyze_symbol
 import sqlite3
 import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
+from threading import Lock
 
 load_dotenv()
 
@@ -28,6 +29,8 @@ login_manager.init_app(app)
 login_manager.login_view = 'login'
 login_manager.login_message = 'Please log in or sign up to access this page.'
 login_manager.login_message_category = 'info'
+
+pipeline_lock = Lock()
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -130,7 +133,7 @@ def get_coins():
     limit = int(request.args.get('limit', 100))
     offset = int(request.args.get('offset', 0))
 
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -168,7 +171,7 @@ def get_coins():
 
 @app.route('/api/coin/<symbol>')
 def get_coin_details(symbol):
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -198,7 +201,7 @@ def get_ohlcv_data(symbol):
     days = period_map.get(period, 30)
     cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -223,7 +226,7 @@ def get_watchlist():
     watchlist_items = Watchlist.query.filter_by(user_id=current_user.id).all()
 
     items = []
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -343,7 +346,7 @@ def check_notifications():
     """Check and trigger notifications based on current prices"""
     notifications = Notification.query.filter_by(user_id=current_user.id, triggered=False).all()
 
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -377,7 +380,7 @@ def get_portfolio():
     total_purchase_value = 0
     total_current_value = 0
 
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -516,11 +519,16 @@ def train_lstm_model(symbol):
 @login_required
 def update_data():
     """Trigger data pipeline update"""
+    if not pipeline_lock.acquire(blocking=False):
+        return jsonify({'success': False, 'error': 'Update already in progress'}), 429
+
     try:
         run_pipeline()
         return jsonify({'success': True, 'message': 'Data updated successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        pipeline_lock.release()
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)

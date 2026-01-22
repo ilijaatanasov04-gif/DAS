@@ -12,11 +12,17 @@ API_KEY = "CG-t7FgFVU7PUeZL3nMf7Zd9hRV"
 HEADERS = {"accept": "application/json", "x-cg-pro-api-key": API_KEY}
 BINANCE_BASE = "https://api.binance.com"
 
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
 
 
 # INIT DATABASE (табели: top_coins, meta_info, ohlcv_data)
 def init_db():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     c = conn.cursor()
 
     c.execute("""
@@ -67,7 +73,7 @@ def init_db():
 
 # CHECK IF WE NEED TO UPDATE TOP 1000 TODAY
 def should_update_top1000():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     c = conn.cursor()
 
     c.execute("SELECT last_top1000_update FROM meta_info WHERE id=1")
@@ -80,7 +86,7 @@ def should_update_top1000():
 
 
 def mark_top1000_updated():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     c = conn.cursor()
 
     today = dt.datetime.now().strftime("%Y-%m-%d")
@@ -163,7 +169,7 @@ def get_binance_symbols():
 def filter_2_check_last_dates(coins):
     print("FILTER 2: Load or Update Top1000")
 
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     c = conn.cursor()
 
     if should_update_top1000():
@@ -189,7 +195,7 @@ def filter_2_check_last_dates(coins):
         mark_top1000_updated()
 
         # reopen after close
-        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn = get_db_connection()
         c = conn.cursor()
 
         print("Top1000 updated")
@@ -237,7 +243,7 @@ def filter_2_check_last_dates(coins):
 
 # GET LAST SAVED TIMESTAMP FOR SYMBOL
 def get_last_saved_timestamp(symbol):
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_connection()
     c = conn.cursor()
 
     c.execute("SELECT MAX(date) FROM ohlcv_data WHERE symbol=?", (symbol,))
@@ -306,7 +312,7 @@ def filter_3_fill_missing_data(coins):
                 break
 
         if candles:
-            conn = sqlite3.connect(DB_PATH, timeout=10)
+            conn = get_db_connection()
             conn.cursor().executemany("""
                 INSERT OR IGNORE INTO ohlcv_data
                 (symbol, timestamp, date, open, high, low, close, volume)
