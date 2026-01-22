@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+
+{% block title %}LSTM Price Prediction - Crypto Data Analyzer{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1><i class="bi bi-graph-up-arrow"></i> LSTM Price Prediction</h1>
+        <p class="text-muted">AI-powered cryptocurrency price forecasting using LSTM neural networks</p>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="card-title mb-3"><i class="bi bi-search"></i> Select Cryptocurrency</h5>
+
+        <div class="row g-3 mb-3">
+            <div class="col-12 col-md-6">
+                <label for="coinSelector" class="form-label">Search for a coin:</label>
+                <div class="position-relative">
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                        <input type="text" class="form-control" id="coinSelector"
+                               placeholder="Search by name or symbol (e.g., BTC, Bitcoin)..."
+                               autocomplete="off">
+                    </div>
+                    <div id="coinDropdown" class="dropdown-menu w-100" style="max-height: 300px; overflow-y: auto;"></div>
+                </div>
+            </div>
+
+            <div class="col-12 col-md-3">
+                <label for="daysAhead" class="form-label">Predict Days Ahead:</label>
+                <select class="form-select" id="daysAhead">
+                    <option value="3">3 Days</option>
+                    <option value="7" selected>7 Days (1 Week)</option>
+                    <option value="14">14 Days (2 Weeks)</option>
+                    <option value="30">30 Days (1 Month)</option>
+                </select>
+            </div>
+
+            <div class="col-12 col-md-3">
+                <label for="lookbackDays" class="form-label">Lookback Period:</label>
+                <select class="form-select" id="lookbackDays">
+                    <option value="7">7 Days</option>
+                    <option value="14">14 Days</option>
+                    <option value="30" selected>30 Days</option>
+                    <option value="60">60 Days</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <label class="form-label">Selected coin:</label>
+            <div id="selectedCoin"></div>
+        </div>
+
+        <div class="d-flex gap-2">
+            <button class="btn btn-primary" id="predictBtn" onclick="predictPrice()" disabled>
+                <i class="bi bi-cpu"></i> Predict Prices
+            </button>
+            {% if current_user.is_authenticated %}
+            <button class="btn btn-outline-secondary" id="trainBtn" onclick="trainNewModel()" disabled>
+                <i class="bi bi-arrow-repeat"></i> Train New Model
+            </button>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<div id="loadingSpinner" class="text-center my-5" style="display: none;">
+    <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;">
+        <span class="visually-hidden">Loading...</span>
+    </div>
+    <p class="mt-3">Running LSTM model...</p>
+</div>
+
+<div id="errorAlert" class="alert alert-danger alert-dismissible fade show" role="alert" style="display: none;">
+    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+    <span id="errorMessage"></span>
+    <button type="button" class="btn-close" onclick="document.getElementById('errorAlert').style.display='none'"></button>
+</div>
+
+<div id="predictionResults" style="display: none;">
+    <!-- Model Performance -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title"><i class="bi bi-speedometer2"></i> Model Performance Metrics</h5>
+            <div class="row text-center g-3">
+                <div class="col-md-4">
+                    <div class="p-3 border rounded">
+                        <small class="text-muted">RMSE (Root Mean Squared Error)</small>
+                        <h4 id="rmse" class="mb-0 text-primary">-</h4>
+                        <small class="text-muted">Lower is better</small>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="p-3 border rounded">
+                        <small class="text-muted">MAPE (Mean Absolute % Error)</small>
+                        <h4 id="mape" class="mb-0 text-warning">-</h4>
+                        <small class="text-muted">Lower is better</small>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="p-3 border rounded">
+                        <small class="text-muted">R² Score</small>
+                        <h4 id="r2score" class="mb-0 text-success">-</h4>
+                        <small class="text-muted">Higher is better (max 1.0)</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Price Predictions Chart -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title">Future Price Predictions</h5>
+            <div style="position: relative; height: 400px;">
+                <canvas id="predictionChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Model Validation Chart -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title">Model Validation (Actual vs Predicted)</h5>
+            <div style="position: relative; height: 400px;">
+                <canvas id="validationChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Predictions Table -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title">Predicted Prices</h5>
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Date</th>
+                            <th>Predicted Price</th>
+                            <th>Change from Today</th>
+                            <th>% Change</th>
+                        </tr>
+                    </thead>
+                    <tbody id="predictionsTable"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Disclaimer -->
+    <div class="alert alert-warning">
+        <i class="bi bi-exclamation-triangle-fill"></i> <strong>Important:</strong> LSTM predictions are based on historical price patterns and should not be considered as financial advice. Cryptocurrency markets are highly volatile and unpredictable. Always do your own research and never invest more than you can afford to lose.
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<style>
+.dropdown-menu {
+    display: none;
+}
+
+.dropdown-menu.show {
+    display: block;
+}
+
+.dropdown-item {
+    cursor: pointer;
+}
+
+.dropdown-item:hover {
+    background-color: #e9ecef;
+}
+
+#selectedCoin {
+    min-height: 35px;
+}
+</style>
+
+<script src="{{ url_for('static', filename='js/price_prediction.js') }}"></script>
+{% endblock %}

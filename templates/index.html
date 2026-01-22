@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Crypto Data Analyzer{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1><i class="bi bi-graph-up-arrow"></i> Cryptocurrency Dashboard</h1>
+        <p class="text-muted">Top 1000 Cryptocurrencies by Market Cap</p>
+    </div>
+    <div class="col-auto">
+        <button class="btn btn-primary" id="updateDataBtn">
+            <i class="bi bi-arrow-repeat"></i> Update Data
+        </button>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="input-group">
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
+            <input type="text" class="form-control" id="searchInput" placeholder="Search by symbol or name...">
+        </div>
+    </div>
+    <div class="col-md-3">
+        <select class="form-select" id="sortSelect">
+            <option value="market_cap_rank">Rank</option>
+            <option value="price">Price</option>
+            <option value="market_cap">Market Cap</option>
+            <option value="volume_24h">Volume 24h</option>
+            <option value="liquidity_score">Liquidity Score</option>
+        </select>
+    </div>
+    <div class="col-md-3">
+        <select class="form-select" id="orderSelect">
+            <option value="asc">Ascending</option>
+            <option value="desc">Descending</option>
+        </select>
+    </div>
+</div>
+
+<div class="table-responsive">
+    <table class="table table-striped table-hover">
+        <thead>
+            <tr class="bg-dark text-white text-uppercase">
+                <th>Rank</th>
+                <th>Symbol</th>
+                <th>Name</th>
+                <th>Price (USD)</th>
+                <th>Market Cap</th>
+                <th>Volume 24h</th>
+                <th>Liquidity</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="coinsTableBody">
+            <tr>
+                <td colspan="8" class="text-center">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<nav>
+    <ul class="pagination justify-content-center" id="pagination"></ul>
+</nav>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}

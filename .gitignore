@@ -1,0 +1,12 @@
+__pycache__/
+instance/
+*.db
+*.sqlite
+*.sqlite3
+.env
+.venv/
+venv/
+*.pyc
+
+# macOS
+.DS_Store

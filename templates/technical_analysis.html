@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+
+{% block title %}Technical Analysis - Crypto Data Analyzer{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1><i class="bi bi-bar-chart-line"></i> Technical Analysis</h1>
+        <p class="text-muted">AI-powered trading signals and indicators</p>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="card-title mb-3"><i class="bi bi-search"></i> Select Cryptocurrency</h5>
+
+        <div class="row g-3 mb-3">
+            <div class="col-12 col-md-8">
+                <label for="coinSelector" class="form-label">Search for a coin:</label>
+                <div class="position-relative">
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                        <input type="text" class="form-control" id="coinSelector"
+                               placeholder="Search by name or symbol (e.g., BTC, Bitcoin)..."
+                               autocomplete="off">
+                    </div>
+                    <div id="coinDropdown" class="dropdown-menu w-100" style="max-height: 300px; overflow-y: auto;"></div>
+                </div>
+            </div>
+
+            <div class="col-12 col-md-4 d-flex align-items-end">
+                <button class="btn btn-primary w-100" id="analyzeBtn" onclick="analyzeSymbol()" disabled>
+                    <i class="bi bi-graph-up-arrow"></i> Analyze
+                </button>
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <label class="form-label">Selected coin:</label>
+            <div id="selectedCoin"></div>
+        </div>
+    </div>
+</div>
+
+<div id="loadingSpinner" class="text-center my-5" style="display: none;">
+    <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;">
+        <span class="visually-hidden">Loading...</span>
+    </div>
+    <p class="mt-3">Calculating technical indicators...</p>
+</div>
+
+<div id="errorAlert" class="alert alert-danger alert-dismissible fade show" role="alert" style="display: none;">
+    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+    <span id="errorMessage"></span>
+    <button type="button" class="btn-close" onclick="document.getElementById('errorAlert').style.display='none'"></button>
+</div>
+
+<div id="analysisResults" style="display: none;">
+    <!-- Market Info -->
+    <div class="row mb-4">
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body text-center">
+                    <h6 class="text-muted">Current Price</h6>
+                    <h4 id="currentPrice">$0.00</h4>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body text-center">
+                    <h6 class="text-muted">Market Cap</h6>
+                    <h4 id="marketCap">$0</h4>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body text-center">
+                    <h6 class="text-muted">24h Volume</h6>
+                    <h4 id="volume24h">$0</h4>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Overall Recommendation -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title"><i class="bi bi-lightning-fill"></i> Overall Recommendation</h5>
+            <div class="text-center mb-3">
+                <h2 id="overallRecommendation" class="mb-2"></h2>
+                <div class="progress" style="height: 25px;">
+                    <div id="signalStrengthBar" class="progress-bar progress-bar-striped progress-bar-animated"
+                         role="progressbar" style="width: 0%">
+                        <span id="signalStrengthText" class="fw-bold"></span>
+                    </div>
+                </div>
+            </div>
+            <div class="row text-center">
+                <div class="col-md-4">
+                    <div class="p-3 bg-success bg-opacity-10 rounded">
+                        <h4 id="buyCount" class="text-success mb-0">0</h4>
+                        <small class="text-muted">BUY Signals</small>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="p-3 bg-danger bg-opacity-10 rounded">
+                        <h4 id="sellCount" class="text-danger mb-0">0</h4>
+                        <small class="text-muted">SELL Signals</small>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="p-3 bg-warning bg-opacity-10 rounded">
+                        <h4 id="holdCount" class="text-warning mb-0">0</h4>
+                        <small class="text-muted">HOLD Signals</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Price Chart and Support/Resistance -->
+    <div class="row mb-4">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Price Chart (1 Year)</h5>
+                    <div style="position: relative; height: 400px;">
+                        <canvas id="priceChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Key Levels</h5>
+                    <h6 class="text-danger mb-2"><i class="bi bi-arrow-up"></i> Resistance</h6>
+                    <div id="resistanceLevels" class="mb-3"></div>
+
+                    <h6 class="text-primary mb-2"><i class="bi bi-dash-circle"></i> Pivot</h6>
+                    <div id="pivotLevel" class="mb-3"></div>
+
+                    <h6 class="text-success mb-2"><i class="bi bi-arrow-down"></i> Support</h6>
+                    <div id="supportLevels"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Trading Suggestions -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title"><i class="bi bi-lightbulb"></i> Trading Suggestions</h5>
+            <div class="alert alert-info mb-3" id="tradingAction"></div>
+            <div class="row text-center g-3">
+                <div class="col-6 col-md-3">
+                    <div class="p-3 border rounded">
+                        <small class="text-muted">Entry Price</small>
+                        <h5 id="entryPrice" class="mb-0 text-primary">-</h5>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="p-3 border rounded">
+                        <small class="text-muted">Stop Loss</small>
+                        <h5 id="stopLoss" class="mb-0 text-danger">-</h5>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="p-3 border rounded">
+                        <small class="text-muted">Take Profit</small>
+                        <h5 id="takeProfit" class="mb-0 text-success">-</h5>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="p-3 border rounded">
+                        <small class="text-muted">Risk/Reward</small>
+                        <h5 id="riskReward" class="mb-0 text-warning">-</h5>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Oscillators -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title"><i class="bi bi-activity"></i> Oscillators (5 Indicators)</h5>
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th width="25%">Indicator</th>
+                            <th width="20%">Value</th>
+                            <th width="15%">Signal</th>
+                            <th width="40%">Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody id="oscillatorsTable"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Moving Averages -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title"><i class="bi bi-graph-up-arrow"></i> Moving Averages (5 Indicators)</h5>
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th width="25%">Indicator</th>
+                            <th width="20%">Value</th>
+                            <th width="15%">Signal</th>
+                            <th width="40%">Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody id="movingAveragesTable"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Disclaimer -->
+    <div class="alert alert-warning">
+        <i class="bi bi-exclamation-triangle-fill"></i> <strong>Disclaimer:</strong> Technical analysis is based on historical data and should be used alongside other forms of analysis. This is not financial advice. Always do your own research before making investment decisions.
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<style>
+.dropdown-menu {
+    display: none;
+}
+
+.dropdown-menu.show {
+    display: block;
+}
+
+.dropdown-item {
+    cursor: pointer;
+}
+
+.dropdown-item:hover {
+    background-color: #e9ecef;
+}
+
+#selectedCoin {
+    min-height: 35px;
+}
+</style>
+
+<script src="{{ url_for('static', filename='js/technical_analysis.js') }}"></script>
+{% endblock %}
