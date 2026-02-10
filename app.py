@@ -511,8 +511,14 @@ def update_data():
         return jsonify({'success': False, 'error': 'Update already in progress'}), 429
 
     try:
-        run_pipeline()
-        return jsonify({'success': True, 'message': 'Data updated successfully'})
+        stats = run_pipeline()
+        if stats.get("top_coins", 0) == 0:
+            return jsonify({
+                'success': False,
+                'error': 'Top coins table is still empty after update. Check Coingecko API access and DATABASE_URL.',
+                'stats': stats
+            }), 500
+        return jsonify({'success': True, 'message': 'Data updated successfully', 'stats': stats})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:

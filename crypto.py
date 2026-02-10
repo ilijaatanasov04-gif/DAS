@@ -10,7 +10,7 @@ DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.getenv('COINGECKO_DB_PATH', os.path.join(DATA_DIR, 'coingecko_top1000.db'))
 DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('SUPABASE_DATABASE_URL')
-API_KEY = os.getenv("COINGECKO_API_KEY", "CG-t7FgFVU7PUeZL3nMf7Zd9hRV")
+API_KEY = os.getenv("COINGECKO_API_KEY") or ""
 HEADERS = {"accept": "application/json"}
 if API_KEY:
     HEADERS["x-cg-pro-api-key"] = API_KEY
@@ -548,11 +548,21 @@ def run_pipeline():
     coins_dates = filter_2_check_last_dates(coins)
     print()
     stats = filter_3_fill_missing_data(coins_dates)
+    top_count = fetch_scalar("SELECT COUNT(*) FROM top_coins")
     print()
 
     print(f"Finished in {time.time() - start:.2f} seconds")
     print(f"Coins processed: {stats['total']}")
     print(f"Candles added: {stats['candles']}")
+    print(f"Top coins in DB: {top_count}")
+
+    return {
+        "coins_fetched": len(coins),
+        "binance_pairs": len(coins_dates),
+        "top_coins": top_count or 0,
+        "coins_processed": stats["total"],
+        "candles_added": stats["candles"]
+    }
 
 if __name__ == "__main__":
     run_pipeline()
