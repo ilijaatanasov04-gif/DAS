@@ -8,3 +8,11 @@ services:
     envVars:
       - key: SECRET_KEY
         generateValue: true
+      - key: DATABASE_URL
+        value: postgresql://postgres.isvbfmtciykdejdgjvcy:Ile%402408004482006@aws-1-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require
+      - key: COINGECKO_API_KEY
+        value: CG-t7FgFVU7PUeZL3nMf7Zd9hRV
+      - key: COINGECKO_API_KEY_TYPE
+        value: demo
+      - key: COINGECKO_API_BASE
+        value: https://api.coingecko.com
