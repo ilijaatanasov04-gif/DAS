@@ -302,7 +302,10 @@ def filter_1_fetch_top_coins():
     valid = []
     for c in raw:
         if (
-            c.get("market_cap_rank")
+            c.get("id")
+            and c.get("symbol")
+            and c.get("name")
+            and c.get("market_cap_rank")
             and c.get("current_price")
             and c.get("market_cap")
             and (c.get("total_volume", 0) / c.get("market_cap", 1)) > 0.00001
@@ -349,23 +352,30 @@ def filter_2_check_last_dates(coins):
 
         execute_write("DELETE FROM top_coins")
 
-        execute_many("""
-            INSERT INTO top_coins
-            (coin_id, symbol, name, market_cap_rank, price, market_cap, volume_24h, liquidity_score)
-            VALUES (:coin_id, :symbol, :name, :market_cap_rank, :price, :market_cap, :volume_24h, :liquidity_score)
-        """, [
-            {
-                "coin_id": x["coin_id"],
-                "symbol": x["symbol"],
-                "name": x["name"],
-                "market_cap_rank": x["market_cap_rank"],
-                "price": x["price"],
-                "market_cap": x["market_cap"],
-                "volume_24h": x["volume_24h"],
-                "liquidity_score": x["liquidity_score"]
-            }
-            for x in coins
-        ])
+        required_keys = {
+            "coin_id", "symbol", "name", "market_cap_rank",
+            "price", "market_cap", "volume_24h", "liquidity_score"
+        }
+        insert_rows = []
+        for x in coins:
+            if required_keys.issubset(x.keys()):
+                insert_rows.append({
+                    "coin_id": x["coin_id"],
+                    "symbol": x["symbol"],
+                    "name": x["name"],
+                    "market_cap_rank": x["market_cap_rank"],
+                    "price": x["price"],
+                    "market_cap": x["market_cap"],
+                    "volume_24h": x["volume_24h"],
+                    "liquidity_score": x["liquidity_score"]
+                })
+
+        if insert_rows:
+            execute_many("""
+                INSERT INTO top_coins
+                (coin_id, symbol, name, market_cap_rank, price, market_cap, volume_24h, liquidity_score)
+                VALUES (:coin_id, :symbol, :name, :market_cap_rank, :price, :market_cap, :volume_24h, :liquidity_score)
+            """, insert_rows)
 
         mark_top1000_updated()
         print("Top1000 updated")
