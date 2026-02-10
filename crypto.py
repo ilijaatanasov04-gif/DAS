@@ -10,8 +10,10 @@ DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.getenv('COINGECKO_DB_PATH', os.path.join(DATA_DIR, 'coingecko_top1000.db'))
 DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('SUPABASE_DATABASE_URL')
-API_KEY = "CG-t7FgFVU7PUeZL3nMf7Zd9hRV"
-HEADERS = {"accept": "application/json", "x-cg-pro-api-key": API_KEY}
+API_KEY = os.getenv("COINGECKO_API_KEY", "CG-t7FgFVU7PUeZL3nMf7Zd9hRV")
+HEADERS = {"accept": "application/json"}
+if API_KEY:
+    HEADERS["x-cg-pro-api-key"] = API_KEY
 BINANCE_BASE = "https://api.binance.com"
 
 _DB_ENGINE = None
@@ -258,6 +260,9 @@ def init_db():
 # CHECK IF WE NEED TO UPDATE TOP 1000 TODAY
 def should_update_top1000():
     row = fetch_scalar("SELECT last_top1000_update FROM meta_info WHERE id = 1")
+    count = fetch_scalar("SELECT COUNT(*) FROM top_coins")
+    if not count:
+        return True
 
     today = dt.datetime.now().strftime("%Y-%m-%d")
     return row != today
@@ -290,7 +295,9 @@ def filter_1_fetch_top_coins():
             )
             if r.status_code == 200:
                 return r.json()
+            print(f"Coingecko error: status={r.status_code} body={r.text[:200]}")
         except:
+            print("Coingecko error: request failed")
             return []
         return []
 
@@ -349,6 +356,26 @@ def filter_2_check_last_dates(coins):
 
     if should_update_top1000():
         print("Updating Top1000 for today")
+
+        if not coins:
+            print("No coins fetched; keeping existing cache")
+            rows = fetch_mappings("SELECT * FROM top_coins")
+            coins = rows
+            binance = get_binance_symbols()
+            result = []
+            for coin in coins:
+                pair = coin["symbol"] + "USDT"
+                if pair not in binance:
+                    continue
+                last_ts = fetch_scalar(
+                    "SELECT MAX(timestamp) FROM ohlcv_data WHERE symbol = :symbol",
+                    {"symbol": pair}
+                )
+                coin["binance_pair"] = pair
+                coin["last_timestamp"] = last_ts
+                result.append(coin)
+            print(f"Binance pairs: {len(result)}")
+            return result
 
         execute_write("DELETE FROM top_coins")
 
