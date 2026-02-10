@@ -2,8 +2,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error, r2_score
-import sqlite3
-from crypto import DB_PATH, get_db_connection, ensure_ohlcv_data
+from crypto import ensure_ohlcv_data, get_db_engine
 from datetime import datetime, timedelta
 import pickle
 import os
@@ -43,19 +42,16 @@ class LSTMPricePredictor:
         query = """
             SELECT date, open, high, low, close, volume
             FROM ohlcv_data
-            WHERE symbol = ? AND date >= ?
+            WHERE symbol = :symbol AND date >= :cutoff_date
             ORDER BY date ASC
         """
 
-        conn = get_db_connection()
-        df = pd.read_sql_query(query, conn, params=(pair, cutoff_date))
-        conn.close()
+        engine = get_db_engine()
+        df = pd.read_sql_query(query, engine, params={"symbol": pair, "cutoff_date": cutoff_date})
 
         if df.empty:
             ensure_ohlcv_data(self.symbol)
-            conn = get_db_connection()
-            df = pd.read_sql_query(query, conn, params=(pair, cutoff_date))
-            conn.close()
+            df = pd.read_sql_query(query, engine, params={"symbol": pair, "cutoff_date": cutoff_date})
             if df.empty:
                 return None
 

@@ -2,9 +2,8 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, f
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from flask_cors import CORS
 from models import db, User, Watchlist, Notification, Portfolio
-from crypto import init_db, run_pipeline, DB_PATH, get_db_connection, ensure_ohlcv_data
+from crypto import init_db, run_pipeline, ensure_ohlcv_data, fetch_mappings, fetch_mapping, fetch_scalar
 from technical_analysis import analyze_symbol
-import sqlite3
 import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
@@ -14,10 +13,19 @@ load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
-DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-os.makedirs(DATA_DIR, exist_ok=True)
-USERS_DB_PATH = os.getenv('USERS_DB_PATH', os.path.join(DATA_DIR, 'users.db'))
-app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{USERS_DB_PATH}"
+
+database_url = os.getenv('DATABASE_URL') or os.getenv('SUPABASE_DATABASE_URL')
+if database_url:
+    if database_url.startswith("postgres://"):
+        database_url = "postgresql+psycopg://" + database_url[len("postgres://"):]
+    elif database_url.startswith("postgresql://"):
+        database_url = "postgresql+psycopg://" + database_url[len("postgresql://"):]
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+else:
+    DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+    os.makedirs(DATA_DIR, exist_ok=True)
+    USERS_DB_PATH = os.getenv('USERS_DB_PATH', os.path.join(DATA_DIR, 'users.db'))
+    app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{USERS_DB_PATH}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Enable CORS for Next.js frontend
@@ -133,34 +141,24 @@ def get_coins():
     limit = int(request.args.get('limit', 100))
     offset = int(request.args.get('offset', 0))
 
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
     query = "SELECT * FROM top_coins WHERE 1=1"
-    params = []
+    params = {}
 
     if search:
-        query += " AND (symbol LIKE ? OR name LIKE ?)"
-        params.extend([f'%{search}%', f'%{search}%'])
+        query += " AND (UPPER(symbol) LIKE :search OR UPPER(name) LIKE :search)"
+        params["search"] = f'%{search}%'
 
     valid_sorts = ['market_cap_rank', 'price', 'market_cap', 'volume_24h', 'liquidity_score']
     if sort_by not in valid_sorts:
         sort_by = 'market_cap_rank'
 
     order_dir = 'DESC' if order == 'desc' else 'ASC'
-    query += f" ORDER BY {sort_by} {order_dir} LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
+    query += f" ORDER BY {sort_by} {order_dir} LIMIT :limit OFFSET :offset"
+    params["limit"] = limit
+    params["offset"] = offset
 
-    c.execute(query, params)
-    rows = c.fetchall()
-
-    coins = [dict(row) for row in rows]
-
-    c.execute("SELECT COUNT(*) as count FROM top_coins")
-    total = c.fetchone()['count']
-
-    conn.close()
+    coins = fetch_mappings(query, params)
+    total = fetch_scalar("SELECT COUNT(*) FROM top_coins")
 
     return jsonify({
         'coins': coins,
@@ -171,19 +169,15 @@ def get_coins():
 
 @app.route('/api/coin/<symbol>')
 def get_coin_details(symbol):
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
-    c.execute("SELECT * FROM top_coins WHERE symbol = ?", (symbol.upper(),))
-    coin = c.fetchone()
+    coin = fetch_mapping(
+        "SELECT * FROM top_coins WHERE UPPER(symbol) = :symbol",
+        {"symbol": symbol.upper()}
+    )
 
     if not coin:
-        conn.close()
         return jsonify({'error': 'Coin not found'}), 404
 
-    conn.close()
-    return jsonify(dict(coin))
+    return jsonify(coin)
 
 @app.route('/api/ohlcv/<symbol>')
 def get_ohlcv_data(symbol):
@@ -201,36 +195,23 @@ def get_ohlcv_data(symbol):
     days = period_map.get(period, 30)
     cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
-    c.execute("""
+    rows = fetch_mappings("""
         SELECT date, open, high, low, close, volume
         FROM ohlcv_data
-        WHERE symbol = ? AND date >= ?
+        WHERE symbol = :symbol AND date >= :cutoff_date
         ORDER BY date ASC
-    """, (pair, cutoff_date))
-
-    rows = c.fetchall()
-    data = [dict(row) for row in rows]
+    """, {"symbol": pair, "cutoff_date": cutoff_date})
+    data = rows
 
     if not data:
-        conn.close()
         ensure_ohlcv_data(symbol)
-        conn = get_db_connection()
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("""
+        data = fetch_mappings("""
             SELECT date, open, high, low, close, volume
             FROM ohlcv_data
-            WHERE symbol = ? AND date >= ?
+            WHERE symbol = :symbol AND date >= :cutoff_date
             ORDER BY date ASC
-        """, (pair, cutoff_date))
-        rows = c.fetchall()
-        data = [dict(row) for row in rows]
+        """, {"symbol": pair, "cutoff_date": cutoff_date})
 
-    conn.close()
     return jsonify(data)
 
 # ==================== WATCHLIST API ====================
@@ -241,13 +222,11 @@ def get_watchlist():
     watchlist_items = Watchlist.query.filter_by(user_id=current_user.id).all()
 
     items = []
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
     for item in watchlist_items:
-        c.execute("SELECT * FROM top_coins WHERE symbol = ?", (item.symbol,))
-        coin = c.fetchone()
+        coin = fetch_mapping(
+            "SELECT * FROM top_coins WHERE UPPER(symbol) = :symbol",
+            {"symbol": item.symbol.upper()}
+        )
 
         if coin:
             items.append({
@@ -262,7 +241,6 @@ def get_watchlist():
                 'liquidity_score': coin['liquidity_score']
             })
 
-    conn.close()
     return jsonify(items)
 
 @app.route('/api/watchlist', methods=['POST'])
@@ -361,25 +339,22 @@ def check_notifications():
     """Check and trigger notifications based on current prices"""
     notifications = Notification.query.filter_by(user_id=current_user.id, triggered=False).all()
 
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
     triggered = []
     for notif in notifications:
-        c.execute("SELECT price FROM top_coins WHERE symbol = ?", (notif.symbol,))
-        coin = c.fetchone()
+        price = fetch_scalar(
+            "SELECT price FROM top_coins WHERE UPPER(symbol) = :symbol",
+            {"symbol": notif.symbol.upper()}
+        )
 
-        if coin and notif.check_trigger(coin['price']):
+        if price is not None and notif.check_trigger(price):
             triggered.append({
                 'id': notif.id,
                 'symbol': notif.symbol,
                 'condition': notif.condition,
                 'target_price': notif.target_price,
-                'current_price': coin['price']
+                'current_price': price
             })
 
-    conn.close()
     db.session.commit()
 
     return jsonify({'triggered': triggered})
@@ -395,13 +370,11 @@ def get_portfolio():
     total_purchase_value = 0
     total_current_value = 0
 
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
     for item in portfolio_items:
-        c.execute("SELECT * FROM top_coins WHERE symbol = ?", (item.symbol,))
-        coin = c.fetchone()
+        coin = fetch_mapping(
+            "SELECT * FROM top_coins WHERE UPPER(symbol) = :symbol",
+            {"symbol": item.symbol.upper()}
+        )
 
         if coin:
             current_price = coin['price']
@@ -424,8 +397,6 @@ def get_portfolio():
 
             total_purchase_value += stats['purchase_value']
             total_current_value += stats['current_value']
-
-    conn.close()
 
     total_profit_loss = total_current_value - total_purchase_value
     total_profit_loss_percentage = (total_profit_loss / total_purchase_value) * 100 if total_purchase_value > 0 else 0

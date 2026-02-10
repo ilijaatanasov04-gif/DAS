@@ -1,8 +1,7 @@
 import pandas as pd
 import numpy as np
 from ta import momentum, trend, volatility, volume
-import sqlite3
-from crypto import DB_PATH, get_db_connection, ensure_ohlcv_data
+from crypto import ensure_ohlcv_data, get_db_engine
 from datetime import datetime, timedelta
 
 
@@ -14,19 +13,16 @@ def get_ohlcv_data(symbol, days=365):
     query = """
         SELECT date, open, high, low, close, volume
         FROM ohlcv_data
-        WHERE symbol = ? AND date >= ?
+        WHERE symbol = :symbol AND date >= :cutoff_date
         ORDER BY date ASC
     """
 
-    conn = get_db_connection()
-    df = pd.read_sql_query(query, conn, params=(pair, cutoff_date))
-    conn.close()
+    engine = get_db_engine()
+    df = pd.read_sql_query(query, engine, params={"symbol": pair, "cutoff_date": cutoff_date})
 
     if df.empty:
         ensure_ohlcv_data(symbol)
-        conn = get_db_connection()
-        df = pd.read_sql_query(query, conn, params=(pair, cutoff_date))
-        conn.close()
+        df = pd.read_sql_query(query, engine, params={"symbol": pair, "cutoff_date": cutoff_date})
         if df.empty:
             return None
 

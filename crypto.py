@@ -1,22 +1,79 @@
 import requests
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import time
 import os
+from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
 
 DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.getenv('COINGECKO_DB_PATH', os.path.join(DATA_DIR, 'coingecko_top1000.db'))
+DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('SUPABASE_DATABASE_URL')
 API_KEY = "CG-t7FgFVU7PUeZL3nMf7Zd9hRV"
 HEADERS = {"accept": "application/json", "x-cg-pro-api-key": API_KEY}
 BINANCE_BASE = "https://api.binance.com"
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
+_DB_ENGINE = None
+_DB_IS_POSTGRES = None
+
+def _normalize_database_url(url):
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+def get_db_engine():
+    global _DB_ENGINE, _DB_IS_POSTGRES
+    if _DB_ENGINE is None:
+        if DATABASE_URL:
+            db_url = _normalize_database_url(DATABASE_URL)
+            _DB_ENGINE = create_engine(db_url, pool_pre_ping=True)
+            _DB_IS_POSTGRES = True
+        else:
+            sqlite_url = f"sqlite:///{DB_PATH}"
+            _DB_ENGINE = create_engine(
+                sqlite_url,
+                connect_args={"check_same_thread": False},
+                poolclass=NullPool
+            )
+            _DB_IS_POSTGRES = False
+    return _DB_ENGINE
+
+def is_postgres():
+    if _DB_ENGINE is None:
+        get_db_engine()
+    return _DB_IS_POSTGRES
+
+def fetch_mappings(query, params=None):
+    engine = get_db_engine()
+    with engine.connect() as conn:
+        result = conn.execute(text(query), params or {})
+        return [dict(row) for row in result.mappings().all()]
+
+def fetch_mapping(query, params=None):
+    engine = get_db_engine()
+    with engine.connect() as conn:
+        result = conn.execute(text(query), params or {})
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+def fetch_scalar(query, params=None):
+    engine = get_db_engine()
+    with engine.connect() as conn:
+        result = conn.execute(text(query), params or {})
+        return result.scalar()
+
+def execute_write(query, params=None):
+    engine = get_db_engine()
+    with engine.begin() as conn:
+        conn.execute(text(query), params or {})
+
+def execute_many(query, params_list):
+    engine = get_db_engine()
+    with engine.begin() as conn:
+        conn.execute(text(query), params_list)
 
 def backfill_ohlcv(symbol, start_ms=0, end_ms=None):
     pair = symbol.upper() + "USDT"
@@ -56,14 +113,24 @@ def backfill_ohlcv(symbol, start_ms=0, end_ms=None):
                 for k in chunk
             ]
 
-            conn = get_db_connection()
-            conn.cursor().executemany("""
-                INSERT OR IGNORE INTO ohlcv_data
+            execute_many("""
+                INSERT INTO ohlcv_data
                 (symbol, timestamp, date, open, high, low, close, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, candles)
-            conn.commit()
-            conn.close()
+                VALUES (:symbol, :timestamp, :date, :open, :high, :low, :close, :volume)
+                ON CONFLICT (symbol, timestamp) DO NOTHING
+            """, [
+                {
+                    "symbol": c[0],
+                    "timestamp": c[1],
+                    "date": c[2],
+                    "open": c[3],
+                    "high": c[4],
+                    "low": c[5],
+                    "close": c[6],
+                    "volume": c[7]
+                }
+                for c in candles
+            ])
 
             total += len(candles)
             cursor = chunk[-1][0] + 1
@@ -79,13 +146,13 @@ def ensure_ohlcv_data(symbol):
     pair = symbol.upper() + "USDT"
     now_ms = int(time.time() * 1000)
 
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT MIN(timestamp), MAX(timestamp) FROM ohlcv_data WHERE symbol = ?", (pair,))
-    row = c.fetchone()
-    conn.close()
+    row = fetch_mapping(
+        "SELECT MIN(timestamp) AS min_ts, MAX(timestamp) AS max_ts FROM ohlcv_data WHERE symbol = :symbol",
+        {"symbol": pair}
+    )
 
-    min_ts, max_ts = row if row else (None, None)
+    min_ts = row["min_ts"] if row else None
+    max_ts = row["max_ts"] if row else None
     total = 0
 
     if min_ts is None:
@@ -102,78 +169,106 @@ def ensure_ohlcv_data(symbol):
 
 # INIT DATABASE (табели: top_coins, meta_info, ohlcv_data)
 def init_db():
-    conn = get_db_connection()
-    c = conn.cursor()
+    if is_postgres():
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS top_coins (
+                coin_id TEXT PRIMARY KEY,
+                symbol TEXT,
+                name TEXT,
+                market_cap_rank INTEGER,
+                price DOUBLE PRECISION,
+                market_cap DOUBLE PRECISION,
+                volume_24h DOUBLE PRECISION,
+                liquidity_score DOUBLE PRECISION
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS meta_info (
+                id INTEGER PRIMARY KEY,
+                last_top1000_update TEXT
+            )
+            """,
+            """
+            INSERT INTO meta_info (id, last_top1000_update)
+            VALUES (1, NULL)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS ohlcv_data (
+                id BIGSERIAL PRIMARY KEY,
+                symbol TEXT,
+                timestamp BIGINT,
+                date TEXT,
+                open DOUBLE PRECISION,
+                high DOUBLE PRECISION,
+                low DOUBLE PRECISION,
+                close DOUBLE PRECISION,
+                volume DOUBLE PRECISION,
+                UNIQUE(symbol, timestamp)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_st ON ohlcv_data(symbol, timestamp)"
+        ]
+    else:
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS top_coins (
+                coin_id TEXT PRIMARY KEY,
+                symbol TEXT,
+                name TEXT,
+                market_cap_rank INT,
+                price REAL,
+                market_cap REAL,
+                volume_24h REAL,
+                liquidity_score REAL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS meta_info (
+                id INTEGER PRIMARY KEY,
+                last_top1000_update TEXT
+            )
+            """,
+            "INSERT OR IGNORE INTO meta_info (id, last_top1000_update) VALUES (1, NULL)",
+            """
+            CREATE TABLE IF NOT EXISTS ohlcv_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                timestamp INT,
+                date TEXT,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                UNIQUE(symbol, timestamp)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_st ON ohlcv_data(symbol, timestamp)"
+        ]
 
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS top_coins (
-            coin_id TEXT PRIMARY KEY,
-            symbol TEXT,
-            name TEXT,
-            market_cap_rank INT,
-            price REAL,
-            market_cap REAL,
-            volume_24h REAL,
-            liquidity_score REAL
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS meta_info (
-            id INTEGER PRIMARY KEY,
-            last_top1000_update TEXT
-        )
-    """)
-
-    c.execute(
-        "INSERT OR IGNORE INTO meta_info (id, last_top1000_update) VALUES (1, NULL)"
-    )
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS ohlcv_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            timestamp INT,
-            date TEXT,
-            open REAL,
-            high REAL,
-            low REAL,
-            close REAL,
-            volume REAL,
-            UNIQUE(symbol, timestamp)
-        )
-    """)
-
-    c.execute("CREATE INDEX IF NOT EXISTS idx_st ON ohlcv_data(symbol, timestamp)")
-
-    conn.commit()
-    conn.close()
+    engine = get_db_engine()
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
 
 
 
 # CHECK IF WE NEED TO UPDATE TOP 1000 TODAY
 def should_update_top1000():
-    conn = get_db_connection()
-    c = conn.cursor()
-
-    c.execute("SELECT last_top1000_update FROM meta_info WHERE id=1")
-    row = c.fetchone()[0]
-
-    conn.close()
+    row = fetch_scalar("SELECT last_top1000_update FROM meta_info WHERE id = 1")
 
     today = dt.datetime.now().strftime("%Y-%m-%d")
     return row != today
 
 
 def mark_top1000_updated():
-    conn = get_db_connection()
-    c = conn.cursor()
-
     today = dt.datetime.now().strftime("%Y-%m-%d")
-    c.execute("UPDATE meta_info SET last_top1000_update=?", (today,))
-
-    conn.commit()
-    conn.close()
+    execute_write(
+        "UPDATE meta_info SET last_top1000_update = :today",
+        {"today": today}
+    )
 
 
 # FILTER 1 — Fetch Top 1000 (Coingecko)
@@ -249,54 +344,37 @@ def get_binance_symbols():
 def filter_2_check_last_dates(coins):
     print("FILTER 2: Load or Update Top1000")
 
-    conn = get_db_connection()
-    c = conn.cursor()
-
     if should_update_top1000():
         print("Updating Top1000 for today")
 
-        c.execute("DELETE FROM top_coins")
+        execute_write("DELETE FROM top_coins")
 
-        c.executemany("""
+        execute_many("""
             INSERT INTO top_coins
             (coin_id, symbol, name, market_cap_rank, price, market_cap, volume_24h, liquidity_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (:coin_id, :symbol, :name, :market_cap_rank, :price, :market_cap, :volume_24h, :liquidity_score)
         """, [
-            (
-                x["coin_id"], x["symbol"], x["name"], x["market_cap_rank"],
-                x["price"], x["market_cap"], x["volume_24h"], x["liquidity_score"]
-            )
+            {
+                "coin_id": x["coin_id"],
+                "symbol": x["symbol"],
+                "name": x["name"],
+                "market_cap_rank": x["market_cap_rank"],
+                "price": x["price"],
+                "market_cap": x["market_cap"],
+                "volume_24h": x["volume_24h"],
+                "liquidity_score": x["liquidity_score"]
+            }
             for x in coins
         ])
 
-        conn.commit()
-        conn.close()
-
         mark_top1000_updated()
-
-        # reopen after close
-        conn = get_db_connection()
-        c = conn.cursor()
-
         print("Top1000 updated")
 
     else:
         print("Already updated today — loading cached top1000")
 
-        c.execute("SELECT * FROM top_coins")
-        rows = c.fetchall()
-        coins = []
-        for r in rows:
-            coins.append({
-                "coin_id": r[0],
-                "symbol": r[1],
-                "name": r[2],
-                "market_cap_rank": r[3],
-                "price": r[4],
-                "market_cap": r[5],
-                "volume_24h": r[6],
-                "liquidity_score": r[7]
-            })
+        rows = fetch_mappings("SELECT * FROM top_coins")
+        coins = rows
 
     # Get Binance symbols
     binance = get_binance_symbols()
@@ -308,28 +386,26 @@ def filter_2_check_last_dates(coins):
         if pair not in binance:
             continue
 
-        c.execute("SELECT MAX(timestamp) FROM ohlcv_data WHERE symbol=?", (pair,))
-        last_ts = c.fetchone()[0]
+        last_ts = fetch_scalar(
+            "SELECT MAX(timestamp) FROM ohlcv_data WHERE symbol = :symbol",
+            {"symbol": pair}
+        )
 
         coin["binance_pair"] = pair
         coin["last_timestamp"] = last_ts
 
         result.append(coin)
 
-    conn.close()
     print(f"Binance pairs: {len(result)}")
     return result
 
 
 # GET LAST SAVED TIMESTAMP FOR SYMBOL
 def get_last_saved_timestamp(symbol):
-    conn = get_db_connection()
-    c = conn.cursor()
-
-    c.execute("SELECT MAX(date) FROM ohlcv_data WHERE symbol=?", (symbol,))
-    row = c.fetchone()[0]
-
-    conn.close()
+    row = fetch_scalar(
+        "SELECT MAX(date) FROM ohlcv_data WHERE symbol = :symbol",
+        {"symbol": symbol}
+    )
 
     if row:
         next_day = dt.datetime.strptime(row, "%Y-%m-%d") + dt.timedelta(days=1)
@@ -392,14 +468,24 @@ def filter_3_fill_missing_data(coins):
                 break
 
         if candles:
-            conn = get_db_connection()
-            conn.cursor().executemany("""
-                INSERT OR IGNORE INTO ohlcv_data
+            execute_many("""
+                INSERT INTO ohlcv_data
                 (symbol, timestamp, date, open, high, low, close, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, candles)
-            conn.commit()
-            conn.close()
+                VALUES (:symbol, :timestamp, :date, :open, :high, :low, :close, :volume)
+                ON CONFLICT (symbol, timestamp) DO NOTHING
+            """, [
+                {
+                    "symbol": c[0],
+                    "timestamp": c[1],
+                    "date": c[2],
+                    "open": c[3],
+                    "high": c[4],
+                    "low": c[5],
+                    "close": c[6],
+                    "volume": c[7]
+                }
+                for c in candles
+            ])
 
         return (pair, len(candles))
 

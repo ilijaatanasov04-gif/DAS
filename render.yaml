@@ -6,11 +6,5 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --timeout 120
     envVars:
-      - key: DATA_DIR
-        value: /var/data
       - key: SECRET_KEY
         generateValue: true
-    disk:
-      name: app-data
-      mountPath: /var/data
-      sizeGB: 1
