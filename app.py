@@ -204,7 +204,7 @@ def get_ohlcv_data(symbol):
     data = rows
 
     if not data:
-        ensure_ohlcv_data(symbol)
+        ensure_ohlcv_data(symbol, max_days=days)
         data = fetch_mappings("""
             SELECT date, open, high, low, close, volume
             FROM ohlcv_data
