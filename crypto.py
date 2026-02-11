@@ -5,15 +5,21 @@ import time
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
+from urllib.parse import urlparse
 
 DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.getenv('COINGECKO_DB_PATH', os.path.join(DATA_DIR, 'coingecko_top1000.db'))
 DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('SUPABASE_DATABASE_URL')
+COINGECKO_BASE = os.getenv("COINGECKO_API_BASE", "https://api.coingecko.com").rstrip("/")
 API_KEY = os.getenv("COINGECKO_API_KEY") or ""
+API_KEY_TYPE = os.getenv("COINGECKO_API_KEY_TYPE", "").strip().lower()
+if not API_KEY_TYPE:
+    API_KEY_TYPE = "pro" if "pro-api.coingecko.com" in COINGECKO_BASE else "demo"
 HEADERS = {"accept": "application/json"}
 if API_KEY:
-    HEADERS["x-cg-pro-api-key"] = API_KEY
+    header_name = "x-cg-pro-api-key" if API_KEY_TYPE == "pro" else "x-cg-demo-api-key"
+    HEADERS[header_name] = API_KEY
 BINANCE_BASE = "https://api.binance.com"
 
 _DB_ENGINE = None
@@ -47,6 +53,15 @@ def is_postgres():
     if _DB_ENGINE is None:
         get_db_engine()
     return _DB_IS_POSTGRES
+
+def get_db_target():
+    if DATABASE_URL:
+        parsed = urlparse(DATABASE_URL)
+        host = parsed.hostname or ""
+        db = (parsed.path or "").lstrip("/")
+        scheme = parsed.scheme or "postgresql"
+        return f"{scheme}://{host}/{db}".rstrip("/")
+    return f"sqlite:///{DB_PATH}"
 
 def fetch_mappings(query, params=None):
     engine = get_db_engine()
@@ -280,31 +295,48 @@ def mark_top1000_updated():
 def filter_1_fetch_top_coins():
     print("FILTER 1: Fetch Top 1000 (Coingecko)")
 
+    page_count = int(os.getenv("COINGECKO_PAGE_COUNT", "4"))
+    per_page = int(os.getenv("COINGECKO_PER_PAGE", "250"))
+    base_delay = float(os.getenv("COINGECKO_PAGE_DELAY_SEC", "1.2"))
+    max_retries = int(os.getenv("COINGECKO_MAX_RETRIES", "5"))
+
     def fetch(p):
-        try:
-            r = requests.get(
-                "https://api.coingecko.com/api/v3/coins/markets",
-                params={
-                    "vs_currency": "usd",
-                    "order": "market_cap_desc",
-                    "per_page": 250,
-                    "page": p
-                },
-                headers=HEADERS,
-                timeout=10
-            )
-            if r.status_code == 200:
-                return r.json()
-            print(f"Coingecko error: status={r.status_code} body={r.text[:200]}")
-        except:
-            print("Coingecko error: request failed")
-            return []
+        url = f"{COINGECKO_BASE}/api/v3/coins/markets"
+        for attempt in range(max_retries):
+            try:
+                r = requests.get(
+                    url,
+                    params={
+                        "vs_currency": "usd",
+                        "order": "market_cap_desc",
+                        "per_page": per_page,
+                        "page": p
+                    },
+                    headers=HEADERS,
+                    timeout=15
+                )
+                if r.status_code == 200:
+                    return r.json()
+                if r.status_code == 429:
+                    retry_after = r.headers.get("Retry-After")
+                    wait = float(retry_after) if retry_after else (base_delay * (2 ** attempt))
+                    print(f"Coingecko rate limit hit; waiting {wait:.1f}s before retry")
+                    time.sleep(wait)
+                    continue
+                print(f"Coingecko error: status={r.status_code} body={r.text[:200]}")
+                return []
+            except Exception:
+                print("Coingecko error: request failed")
+                time.sleep(base_delay * (2 ** attempt))
         return []
 
     raw = []
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        for f in ex.map(fetch, [1, 2, 3, 4]):
-            raw.extend(f)
+    for p in range(1, page_count + 1):
+        batch = fetch(p)
+        if not batch:
+            continue
+        raw.extend(batch)
+        time.sleep(base_delay)
 
     valid = []
     for c in raw:
@@ -561,7 +593,11 @@ def run_pipeline():
         "binance_pairs": len(coins_dates),
         "top_coins": top_count or 0,
         "coins_processed": stats["total"],
-        "candles_added": stats["candles"]
+        "candles_added": stats["candles"],
+        "coingecko_base": COINGECKO_BASE,
+        "coingecko_key_set": bool(API_KEY),
+        "coingecko_key_type": API_KEY_TYPE if API_KEY else None,
+        "db_target": get_db_target()
     }
 
 if __name__ == "__main__":
