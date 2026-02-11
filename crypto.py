@@ -21,6 +21,9 @@ if API_KEY:
     header_name = "x-cg-pro-api-key" if API_KEY_TYPE == "pro" else "x-cg-demo-api-key"
     HEADERS[header_name] = API_KEY
 BINANCE_BASE = "https://api.binance.com"
+BINANCE_MAX_COINS = int(os.getenv("BINANCE_MAX_COINS", "100"))
+BINANCE_MAX_YEARS = int(os.getenv("BINANCE_MAX_YEARS", "5"))
+BINANCE_WORKERS = int(os.getenv("BINANCE_WORKERS", "4"))
 
 _DB_ENGINE = None
 _DB_IS_POSTGRES = None
@@ -406,6 +409,8 @@ def filter_2_check_last_dates(coins):
                 coin["binance_pair"] = pair
                 coin["last_timestamp"] = last_ts
                 result.append(coin)
+            if BINANCE_MAX_COINS and len(result) > BINANCE_MAX_COINS:
+                result = result[:BINANCE_MAX_COINS]
             print(f"Binance pairs: {len(result)}")
             return result
 
@@ -465,6 +470,9 @@ def filter_2_check_last_dates(coins):
 
         result.append(coin)
 
+    if BINANCE_MAX_COINS and len(result) > BINANCE_MAX_COINS:
+        result = result[:BINANCE_MAX_COINS]
+
     print(f"Binance pairs: {len(result)}")
     return result
 
@@ -480,7 +488,8 @@ def get_last_saved_timestamp(symbol):
         next_day = dt.datetime.strptime(row, "%Y-%m-%d") + dt.timedelta(days=1)
         return int(next_day.timestamp() * 1000)
 
-    return int((dt.datetime.now() - dt.timedelta(days=3650)).timestamp() * 1000)
+    max_days = max(BINANCE_MAX_YEARS, 1) * 365
+    return int((dt.datetime.now() - dt.timedelta(days=max_days)).timestamp() * 1000)
 
 
 # FILTER 3 — Smart OHLCV Fetch
@@ -558,7 +567,7 @@ def filter_3_fill_missing_data(coins):
 
         return (pair, len(candles))
 
-    with ThreadPoolExecutor(max_workers=16) as ex:
+    with ThreadPoolExecutor(max_workers=max(BINANCE_WORKERS, 1)) as ex:
         results = list(ex.map(download, coins))
 
     total = sum(r[1] for r in results)
