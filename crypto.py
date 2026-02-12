@@ -172,9 +172,6 @@ def backfill_ohlcv(symbol, start_ms=0, end_ms=None):
 def ensure_ohlcv_data(symbol, max_days=None):
     pair = symbol.upper() + "USDT"
     now_ms = int(time.time() * 1000)
-    min_start_ms = None
-    if max_days:
-        min_start_ms = now_ms - (max_days * 86400000)
 
     row = fetch_mapping(
         "SELECT MIN(timestamp) AS min_ts, MAX(timestamp) AS max_ts FROM ohlcv_data WHERE symbol = :symbol",
@@ -186,19 +183,12 @@ def ensure_ohlcv_data(symbol, max_days=None):
     total = 0
 
     if min_ts is None:
-        start_ms = min_start_ms if min_start_ms is not None else 0
-        total += backfill_ohlcv(symbol, start_ms=start_ms, end_ms=now_ms)
+        total += backfill_ohlcv(symbol, start_ms=0, end_ms=now_ms)
     else:
         if min_ts > 0:
-            start_ms = min_start_ms if min_start_ms is not None else 0
-            if min_ts - 1 >= start_ms:
-                total += backfill_ohlcv(symbol, start_ms=start_ms, end_ms=min_ts - 1)
+            total += backfill_ohlcv(symbol, start_ms=0, end_ms=min_ts - 1)
         if max_ts and max_ts + 86400000 < now_ms:
-            end_ms = now_ms
-            if min_start_ms is not None and max_ts + 1 < min_start_ms:
-                # Only backfill within the desired window
-                return total
-            total += backfill_ohlcv(symbol, start_ms=max_ts + 1, end_ms=end_ms)
+            total += backfill_ohlcv(symbol, start_ms=max_ts + 1, end_ms=now_ms)
 
     return total
 
@@ -504,8 +494,8 @@ def get_last_saved_timestamp(symbol):
     if row:
         return int(row) + 86400000
 
-    max_days = max(BINANCE_MAX_YEARS, 1) * 365
-    return int((dt.datetime.now() - dt.timedelta(days=max_days)).timestamp() * 1000)
+    # Full history backfill from earliest available Binance candle.
+    return 0
 
 
 # FILTER 3 — Smart OHLCV Fetch
