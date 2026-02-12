@@ -294,13 +294,8 @@ def init_db():
 
 # CHECK IF WE NEED TO UPDATE TOP 1000 TODAY
 def should_update_top1000():
-    row = fetch_scalar("SELECT last_top1000_update FROM meta_info WHERE id = 1")
-    count = fetch_scalar("SELECT COUNT(*) FROM top_coins")
-    if not count:
-        return True
-
-    today = dt.datetime.now().strftime("%Y-%m-%d")
-    return row != today
+    # Temporary debug mode: always refresh top coins on each pipeline run.
+    return True
 
 
 def mark_top1000_updated():
