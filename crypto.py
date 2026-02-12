@@ -21,13 +21,18 @@ if API_KEY:
     header_name = "x-cg-pro-api-key" if API_KEY_TYPE == "pro" else "x-cg-demo-api-key"
     HEADERS[header_name] = API_KEY
 BINANCE_BASE = os.getenv("BINANCE_BASE", "https://api.binance.com").rstrip("/")
+BINANCE_BASES = [
+    b.strip().rstrip("/")
+    for b in os.getenv("BINANCE_BASES", f"{BINANCE_BASE},https://api.binance.us").split(",")
+    if b.strip()
+]
 BINANCE_MAX_COINS = int(os.getenv("BINANCE_MAX_COINS", "100"))
 BINANCE_MAX_YEARS = int(os.getenv("BINANCE_MAX_YEARS", "5"))
 BINANCE_WORKERS = int(os.getenv("BINANCE_WORKERS", "4"))
-COINGECKO_OHLCV_FALLBACK = os.getenv("COINGECKO_OHLCV_FALLBACK", "1").strip().lower() in ("1", "true", "yes", "on")
 
 _DB_ENGINE = None
 _DB_IS_POSTGRES = None
+_ACTIVE_BINANCE_BASE = BINANCE_BASES[0] if BINANCE_BASES else BINANCE_BASE
 
 def _normalize_database_url(url):
     if url.startswith("postgres://"):
@@ -106,13 +111,14 @@ def _save_candles(candles):
         ON CONFLICT (symbol, timestamp) DO NOTHING
     """, candles)
 
-def _fetch_binance_candles(pair, start_ms, end_ms):
+def _fetch_binance_candles(pair, start_ms, end_ms, binance_base=None):
+    base = (binance_base or _ACTIVE_BINANCE_BASE or BINANCE_BASE).rstrip("/")
     candles = []
     cursor = start_ms
 
     while cursor < end_ms:
         r = requests.get(
-            BINANCE_BASE + "/api/v3/klines",
+            base + "/api/v3/klines",
             params={
                 "symbol": pair,
                 "interval": "1d",
@@ -124,7 +130,7 @@ def _fetch_binance_candles(pair, start_ms, end_ms):
         )
 
         if r.status_code != 200:
-            print(f"Binance error: status={r.status_code} body={r.text[:200]}")
+            print(f"Binance klines error ({base}): status={r.status_code} body={r.text[:200]}")
             return None
 
         chunk = r.json()
@@ -149,84 +155,14 @@ def _fetch_binance_candles(pair, start_ms, end_ms):
 
     return candles
 
-def _fetch_coingecko_candles(coin_id, pair, start_ms, end_ms):
-    if not coin_id:
-        return []
-
-    max_days = max(BINANCE_MAX_YEARS, 1) * 365
-    days_requested = int((end_ms - start_ms) / 86400000) + 2
-    days = max(1, min(days_requested, max_days))
-    url = f"{COINGECKO_BASE}/api/v3/coins/{coin_id}/market_chart"
-
-    for attempt in range(4):
-        try:
-            r = requests.get(
-                url,
-                params={"vs_currency": "usd", "days": str(days), "interval": "daily"},
-                headers=HEADERS,
-                timeout=20
-            )
-            if r.status_code == 429:
-                time.sleep(1.0 * (2 ** attempt))
-                continue
-            if r.status_code != 200:
-                print(f"Coingecko market_chart error ({coin_id}): status={r.status_code} body={r.text[:200]}")
-                return []
-
-            payload = r.json()
-            prices = payload.get("prices") or []
-            volumes = payload.get("total_volumes") or []
-            if not prices:
-                return []
-
-            volume_by_ts = {}
-            for row in volumes:
-                if isinstance(row, list) and len(row) >= 2:
-                    volume_by_ts[int(row[0])] = float(row[1])
-
-            result = []
-            for row in prices:
-                if not isinstance(row, list) or len(row) < 2:
-                    continue
-                ts = int(row[0])
-                if ts < start_ms or ts > end_ms:
-                    continue
-                close = float(row[1])
-                result.append({
-                    "symbol": pair,
-                    "timestamp": ts,
-                    "date": dt.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d"),
-                    "open": close,
-                    "high": close,
-                    "low": close,
-                    "close": close,
-                    "volume": float(volume_by_ts.get(ts, 0.0))
-                })
-            return result
-        except Exception:
-            time.sleep(1.0 * (2 ** attempt))
-
-    return []
-
-def _get_coin_id_by_symbol(symbol):
-    row = fetch_mapping(
-        "SELECT coin_id FROM top_coins WHERE UPPER(symbol) = :symbol LIMIT 1",
-        {"symbol": symbol.upper()}
-    )
-    return row.get("coin_id") if row else None
-
 def backfill_ohlcv(symbol, start_ms=0, end_ms=None):
     pair = symbol.upper() + "USDT"
     end_ms = end_ms or int(time.time() * 1000)
-    coin_id = _get_coin_id_by_symbol(symbol)
-
-    try:
-        candles = _fetch_binance_candles(pair, start_ms, end_ms)
-    except Exception:
-        candles = None
-
-    if candles is None and COINGECKO_OHLCV_FALLBACK:
-        candles = _fetch_coingecko_candles(coin_id, pair, start_ms, end_ms)
+    binance = get_binance_symbols()
+    if pair not in binance:
+        print(f"Binance pair missing: {pair}")
+        return 0
+    candles = _fetch_binance_candles(pair, start_ms, end_ms)
 
     if candles:
         _save_candles(candles)
@@ -454,27 +390,33 @@ def filter_1_fetch_top_coins():
 
 # Fetch Binance symbols
 def get_binance_symbols():
-    url = BINANCE_BASE + "/api/v3/exchangeInfo"
-    for attempt in range(3):
-        try:
-            r = requests.get(url, timeout=10)
-            if r.status_code != 200:
-                print(f"Binance exchangeInfo error: status={r.status_code} body={r.text[:200]}")
+    global _ACTIVE_BINANCE_BASE
+    for base in BINANCE_BASES:
+        url = base + "/api/v3/exchangeInfo"
+        for attempt in range(3):
+            try:
+                r = requests.get(url, timeout=10)
+                if r.status_code == 451:
+                    print(f"Binance exchangeInfo restricted on {base} (451)")
+                    break
+                if r.status_code != 200:
+                    print(f"Binance exchangeInfo error ({base}): status={r.status_code} body={r.text[:200]}")
+                    time.sleep(1.0 * (2 ** attempt))
+                    continue
+                payload = r.json()
+                symbols = payload.get("symbols", [])
+                if not symbols:
+                    print(f"Binance exchangeInfo error ({base}): no symbols in response")
+                    break
+                _ACTIVE_BINANCE_BASE = base
+                return {
+                    s["symbol"]
+                    for s in symbols
+                    if s.get("status") == "TRADING" and s.get("symbol", "").endswith("USDT")
+                }
+            except Exception:
                 time.sleep(1.0 * (2 ** attempt))
                 continue
-            payload = r.json()
-            symbols = payload.get("symbols", [])
-            if not symbols:
-                print("Binance exchangeInfo error: no symbols in response")
-                return set()
-            return {
-                s["symbol"]
-                for s in symbols
-                if s.get("status") == "TRADING" and s.get("symbol", "").endswith("USDT")
-            }
-        except Exception:
-            time.sleep(1.0 * (2 ** attempt))
-            continue
     return set()
 
 
@@ -528,29 +470,24 @@ def filter_2_check_last_dates(coins):
         rows = fetch_mappings("SELECT * FROM top_coins")
         coins = rows
 
-    # Use Binance when available; otherwise use Coingecko fallback for OHLCV.
     binance = get_binance_symbols()
-    binance_available = len(binance) > 0
+    if not binance:
+        print("Binance symbols unavailable on all configured hosts")
+        return []
 
     result = []
     for coin in coins:
         pair = coin["symbol"] + "USDT"
-
-        if binance_available and pair in binance:
-            source = "binance"
-        else:
-            source = "coingecko"
-            if not COINGECKO_OHLCV_FALLBACK:
-                continue
+        if pair not in binance:
+            continue
 
         last_ts = fetch_scalar(
             "SELECT MAX(timestamp) FROM ohlcv_data WHERE symbol = :symbol",
             {"symbol": pair}
         )
 
-        coin["symbol_pair"] = pair
         coin["binance_pair"] = pair
-        coin["data_source"] = source
+        coin["binance_base"] = _ACTIVE_BINANCE_BASE
         coin["last_timestamp"] = last_ts
 
         result.append(coin)
@@ -558,10 +495,7 @@ def filter_2_check_last_dates(coins):
     if BINANCE_MAX_COINS and len(result) > BINANCE_MAX_COINS:
         result = result[:BINANCE_MAX_COINS]
 
-    source_counts = {"binance": 0, "coingecko": 0}
-    for coin in result:
-        source_counts[coin["data_source"]] = source_counts.get(coin["data_source"], 0) + 1
-    print(f"Pairs prepared: {len(result)} (binance={source_counts['binance']}, coingecko={source_counts['coingecko']})")
+    print(f"Binance pairs: {len(result)} (base={_ACTIVE_BINANCE_BASE})")
     return result
 
 
@@ -584,8 +518,8 @@ def filter_3_fill_missing_data(coins):
     print("FILTER 3: Smart OHLCV Fetch")
 
     def download(coin):
-        pair = coin.get("symbol_pair") or coin.get("binance_pair") or (coin["symbol"] + "USDT")
-        source = coin.get("data_source", "binance")
+        pair = coin["binance_pair"]
+        base = coin.get("binance_base") or _ACTIVE_BINANCE_BASE
 
         start = get_last_saved_timestamp(pair)
         end = int(time.time() * 1000)
@@ -593,15 +527,7 @@ def filter_3_fill_missing_data(coins):
         if start >= end:
             return (pair, 0)
 
-        if source == "binance":
-            try:
-                candles = _fetch_binance_candles(pair, start, end)
-            except Exception:
-                candles = None
-            if candles is None and COINGECKO_OHLCV_FALLBACK:
-                candles = _fetch_coingecko_candles(coin.get("coin_id"), pair, start, end)
-        else:
-            candles = _fetch_coingecko_candles(coin.get("coin_id"), pair, start, end)
+        candles = _fetch_binance_candles(pair, start, end, binance_base=base)
 
         if candles:
             _save_candles(candles)
