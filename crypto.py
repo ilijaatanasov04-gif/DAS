@@ -26,7 +26,7 @@ BINANCE_BASES = [
     for b in os.getenv("BINANCE_BASES", f"{BINANCE_BASE},https://api.binance.us").split(",")
     if b.strip()
 ]
-BINANCE_MAX_COINS = int(os.getenv("BINANCE_MAX_COINS", "100"))
+BINANCE_MAX_COINS = int(os.getenv("BINANCE_MAX_COINS", "0"))
 BINANCE_MAX_YEARS = int(os.getenv("BINANCE_MAX_YEARS", "5"))
 BINANCE_WORKERS = int(os.getenv("BINANCE_WORKERS", "4"))
 

@@ -4,7 +4,7 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 1200
     envVars:
       - key: SECRET_KEY
         generateValue: true
@@ -16,3 +16,7 @@ services:
         value: demo
       - key: COINGECKO_API_BASE
         value: https://api.coingecko.com
+      - key: BINANCE_MAX_COINS
+        value: "0"
+      - key: BINANCE_WORKERS
+        value: "6"
