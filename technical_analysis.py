@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
 from ta import momentum, trend, volatility, volume
-from crypto import ensure_ohlcv_data, get_db_engine
+from sqlalchemy import text
+from crypto import ensure_ohlcv_data, get_db_engine, fetch_mapping
 from datetime import datetime, timedelta
 
 
@@ -18,11 +19,11 @@ def get_ohlcv_data(symbol, days=365):
     """
 
     engine = get_db_engine()
-    df = pd.read_sql_query(query, engine, params={"symbol": pair, "cutoff_date": cutoff_date})
+    df = pd.read_sql_query(text(query), engine, params={"symbol": pair, "cutoff_date": cutoff_date})
 
     if df.empty:
         ensure_ohlcv_data(symbol)
-        df = pd.read_sql_query(query, engine, params={"symbol": pair, "cutoff_date": cutoff_date})
+        df = pd.read_sql_query(text(query), engine, params={"symbol": pair, "cutoff_date": cutoff_date})
         if df.empty:
             return None
 
@@ -373,12 +374,10 @@ def analyze_symbol(symbol, timeframe='1y'):
         return {'error': 'Insufficient data for analysis'}
 
     # Get current price
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT price, market_cap, volume_24h FROM top_coins WHERE symbol = ?", (symbol.upper(),))
-    coin = c.fetchone()
-    conn.close()
+    coin = fetch_mapping(
+        "SELECT price, market_cap, volume_24h FROM top_coins WHERE UPPER(symbol) = :symbol",
+        {"symbol": symbol.upper()}
+    )
 
     if not coin:
         return {'error': 'Coin not found'}

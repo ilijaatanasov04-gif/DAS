@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error, r2_score
-from crypto import ensure_ohlcv_data, get_db_engine
+from sqlalchemy import text
+from crypto import ensure_ohlcv_data, get_db_engine, fetch_mapping
 from datetime import datetime, timedelta
 import pickle
 import os
@@ -47,11 +48,11 @@ class LSTMPricePredictor:
         """
 
         engine = get_db_engine()
-        df = pd.read_sql_query(query, engine, params={"symbol": pair, "cutoff_date": cutoff_date})
+        df = pd.read_sql_query(text(query), engine, params={"symbol": pair, "cutoff_date": cutoff_date})
 
         if df.empty:
             ensure_ohlcv_data(self.symbol)
-            df = pd.read_sql_query(query, engine, params={"symbol": pair, "cutoff_date": cutoff_date})
+            df = pd.read_sql_query(text(query), engine, params={"symbol": pair, "cutoff_date": cutoff_date})
             if df.empty:
                 return None
 
@@ -296,13 +297,10 @@ def predict_price(symbol, days_ahead=7, lookback_days=30):
         evaluation = predictor.evaluate()
 
         # Get current price
-        conn = get_db_connection()
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT price FROM top_coins WHERE symbol = ?", (symbol.upper(),))
-        coin = c.fetchone()
-        conn.close()
-
+        coin = fetch_mapping(
+            "SELECT price FROM top_coins WHERE UPPER(symbol) = :symbol",
+            {"symbol": symbol.upper()}
+        )
         current_price = coin['price'] if coin else None
 
         return {
