@@ -2,7 +2,6 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, f
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from flask_cors import CORS
 from models import db, User, Watchlist, Notification, Portfolio
-from crypto import init_db, run_pipeline, ensure_ohlcv_data, fetch_mappings, fetch_mapping, fetch_scalar
 from technical_analysis import analyze_symbol
 import os
 from dotenv import load_dotenv
@@ -10,6 +9,7 @@ from datetime import datetime, timedelta
 from threading import Lock
 
 load_dotenv()
+from crypto import init_db, run_pipeline, ensure_ohlcv_data, fetch_mappings, fetch_mapping, fetch_scalar
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
@@ -520,6 +520,7 @@ def update_data():
             }), 500
         return jsonify({'success': True, 'message': 'Data updated successfully', 'stats': stats})
     except Exception as e:
+        app.logger.exception("Pipeline update failed")
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
         pipeline_lock.release()

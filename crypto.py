@@ -6,6 +6,9 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 from urllib.parse import urlparse
+from dotenv import load_dotenv
+
+load_dotenv()
 
 DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -284,8 +287,11 @@ def init_db():
 
 # CHECK IF WE NEED TO UPDATE TOP 1000 TODAY
 def should_update_top1000():
-    # Temporary debug mode: always refresh top coins on each pipeline run.
-    return True
+    today = dt.datetime.now().strftime("%Y-%m-%d")
+    last_update = fetch_scalar(
+        "SELECT last_top1000_update FROM meta_info WHERE id = 1"
+    )
+    return last_update != today
 
 
 def mark_top1000_updated():
@@ -425,11 +431,16 @@ def filter_2_check_last_dates(coins):
             "coin_id", "symbol", "name", "market_cap_rank",
             "price", "market_cap", "volume_24h", "liquidity_score"
         }
+        seen_coin_ids = set()
         insert_rows = []
         for x in coins:
             if required_keys.issubset(x.keys()):
+                coin_id = x["coin_id"]
+                if coin_id in seen_coin_ids:
+                    continue
+                seen_coin_ids.add(coin_id)
                 insert_rows.append({
-                    "coin_id": x["coin_id"],
+                    "coin_id": coin_id,
                     "symbol": x["symbol"],
                     "name": x["name"],
                     "market_cap_rank": x["market_cap_rank"],
@@ -444,6 +455,14 @@ def filter_2_check_last_dates(coins):
                 INSERT INTO top_coins
                 (coin_id, symbol, name, market_cap_rank, price, market_cap, volume_24h, liquidity_score)
                 VALUES (:coin_id, :symbol, :name, :market_cap_rank, :price, :market_cap, :volume_24h, :liquidity_score)
+                ON CONFLICT (coin_id) DO UPDATE SET
+                    symbol = EXCLUDED.symbol,
+                    name = EXCLUDED.name,
+                    market_cap_rank = EXCLUDED.market_cap_rank,
+                    price = EXCLUDED.price,
+                    market_cap = EXCLUDED.market_cap,
+                    volume_24h = EXCLUDED.volume_24h,
+                    liquidity_score = EXCLUDED.liquidity_score
             """, insert_rows)
 
         mark_top1000_updated()
@@ -506,18 +525,25 @@ def filter_3_fill_missing_data(coins):
         pair = coin["binance_pair"]
         base = coin.get("binance_base") or _ACTIVE_BINANCE_BASE
 
-        start = get_last_saved_timestamp(pair)
-        end = int(time.time() * 1000)
+        try:
+            start = get_last_saved_timestamp(pair)
+            end = int(time.time() * 1000)
 
-        if start >= end:
+            if start >= end:
+                return (pair, 0)
+
+            candles = _fetch_binance_candles(pair, start, end, binance_base=base)
+            if candles is None:
+                # Binance request failed for this pair; continue pipeline.
+                return (pair, 0)
+
+            if candles:
+                _save_candles(candles)
+
+            return (pair, len(candles))
+        except Exception as e:
+            print(f"OHLCV fetch failed for {pair}: {e}")
             return (pair, 0)
-
-        candles = _fetch_binance_candles(pair, start, end, binance_base=base)
-
-        if candles:
-            _save_candles(candles)
-
-        return (pair, len(candles))
 
     with ThreadPoolExecutor(max_workers=max(BINANCE_WORKERS, 1)) as ex:
         results = list(ex.map(download, coins))
